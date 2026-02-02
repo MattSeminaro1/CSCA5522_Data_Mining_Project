@@ -29,7 +29,7 @@ def run_async(coro):
 
 
 # Tabs for different functions
-tab1, tab2, tab3 = st.tabs(["Download Data", "View Data", "Export"])
+tab1, tab2, tab4, tab3 = st.tabs(["Download Data", "View Data", "Export", "Explore Data"])
 
 
 with tab1:
@@ -52,17 +52,27 @@ with tab1:
             symbols.append(custom_symbol.upper())
     
     with col2:
-        days_back = st.number_input(
-            "Days of History",
-            min_value=1,
-            max_value=730,
-            value=365,
-            step=1,
-            help="Number of days of historical data to download"
+        today = datetime.utcnow().date()
+
+        start_date_ui = st.date_input(
+            "Start Date",
+            value=today - timedelta(days=365),
+            max_value=today
         )
+
+        end_date_ui = st.date_input(
+            "End Date",
+            value=today,
+            max_value=today
+        )
+
+        if start_date_ui >= end_date_ui:
+            st.error("Start date must be before end date.")
+
+        days_back = (end_date_ui - start_date_ui).days
         
-        estimated_candles = len(symbols) * days_back * 1440
-        estimated_time = max(1, len(symbols) * days_back // 365)
+        estimated_candles = len(symbols) * max(days_back, 1) * 1440
+        estimated_time = max(1, len(symbols) * max(days_back, 1) // 365)
         
         st.info(f"""
         **Estimated download:**
@@ -102,8 +112,8 @@ with tab1:
         for i, symbol in enumerate(symbols):
             status_text.text(f"Downloading {symbol}... ({i+1}/{total_symbols})")
             
-            end_date = datetime.utcnow() - timedelta(days=1)
-            start_date = end_date - timedelta(days=days_back)
+            end_date = datetime.combine(end_date_ui, datetime.min.time())
+            start_date = datetime.combine(start_date_ui, datetime.min.time())
             
             try:
                 df = run_async(download_symbol(symbol, start_date, end_date, use_monthly))
@@ -196,8 +206,159 @@ with tab2:
         st.error(f"Could not connect to database: {e}")
         st.info("Make sure the infrastructure is running: `cd infrastructure && docker-compose up -d`")
 
-
 with tab3:
+    st.subheader("Explore Data")
+
+    from src.data.database import db
+
+    explorer, schema = st.tabs(["🔎 Query Explorer", "📐 Schema"])
+
+    # ---------------- Query Explorer ----------------
+
+    with explorer:
+
+        st.markdown("### Run SQL")
+
+        default_sql = """
+SELECT *
+FROM raw_ohlcv
+ORDER BY time DESC
+LIMIT 100;
+"""
+
+        sql = st.text_area(
+            "SQL Editor",
+            value=default_sql,
+            height=200
+        )
+
+        if st.button("Run Query", type="primary"):
+
+            try:
+                df = db.run_query(sql)
+
+                st.success(f"{len(df):,} rows returned")
+                st.dataframe(df, use_container_width=True)
+
+            except Exception as e:
+                st.error(str(e))
+
+    # ---------------- Schema ----------------
+
+    with schema:
+
+        st.markdown("## Timescale Schema")
+
+        st.markdown("""
+# 📐 Database Schema (TimescaleDB)
+
+This database contains multiple layers:
+
+1. **Core Tables** – primary fact tables used in pipelines and ML workflows  
+2. **Auxiliary / Helper Tables** – support tables, metadata, or tagging  
+3. **Views & Continuous Aggregates** – derived summaries, rollups, and analytics
+
+---
+
+## 🧱 Core Tables
+
+These are the main tables you should interact with:
+
+### raw_ohlcv (Hypertable)
+Primary candlestick fact table.
+- PK: `(time, symbol)`
+- Minute-level OHLCV, trade count, source, ingested_at
+- Feeds all downstream pipelines
+
+### features (Hypertable)
+Derived feature store for ML:
+- PK: `(time, symbol)`
+- Contains volatility, returns, rolling stats, volume/volatility ratios
+- Tracks `feature_version`
+
+### predictions (Hypertable)
+Model inference outputs:
+- anomaly_score, is_anomaly, threshold_used, cluster_id
+- features_json, latency_ms, predicted_at
+- Indexed by anomalies and model
+
+### collection_jobs
+Tracks historical ingestion jobs:
+- symbol, start_date, end_date, interval_type
+- status, rows_collected, error_message, timestamps
+
+### model_metadata
+Lightweight model registry:
+- model_name, model_version, hyperparameters, feature_names
+- training range, evaluation metrics, is_active
+
+---
+
+## 🛠 Auxiliary / Helper Tables
+
+Other tables exist for supporting workflows (may appear in dropdowns):
+
+- `input_tags` — tags for features/models
+- `audit_log` — ingestion or model audit entries
+- `feature_tags` — mapping features to tags
+- Any other small metadata tables  
+
+These are **not core tables**, so definitions may not exist in this documentation.
+
+---
+
+## 👁 Views
+
+- `v_data_status` — per-symbol ingestion summary  
+- `v_daily_anomaly_summary` — daily anomaly aggregation  
+- `v_recent_anomalies` — latest anomalies  
+
+---
+
+## ⚡ Continuous Aggregates (Materialized Views)
+
+- `ohlcv_hourly` — hourly rollups  
+- `ohlcv_daily` — daily rollups  
+""")
+
+        tables = db.run_query("""
+SELECT table_name
+FROM information_schema.tables
+WHERE table_schema='public'
+AND table_type='BASE TABLE'
+ORDER BY table_name;
+""")
+
+        views = db.run_query("""
+SELECT table_name
+FROM information_schema.views
+WHERE table_schema='public'
+ORDER BY table_name;
+""")
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.markdown("### Tables")
+            st.dataframe(tables)
+
+        with col2:
+            st.markdown("### Views")
+            st.dataframe(views)
+
+        selected = st.selectbox("Inspect Table", tables['table_name'])
+
+        cols = db.run_query(f"""
+SELECT column_name, data_type
+FROM information_schema.columns
+WHERE table_name='{selected}'
+""")
+
+        st.markdown("### Columns")
+        st.dataframe(cols)
+
+
+with tab4:
     st.subheader("Export Data")
     
     try:

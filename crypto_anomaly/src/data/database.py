@@ -93,6 +93,10 @@ class Database:
         """Execute query and return results as DataFrame."""
         with self.connection() as conn:
             return pd.read_sql(text(query), conn, params=params)
+        
+    def run_query(self, sql):
+        with self.engine.begin() as conn:
+            return pd.read_sql(sql, conn)
     
     def fetch_one(self, query: str, params: Optional[dict] = None) -> Optional[tuple]:
         """Execute query and return single row."""
