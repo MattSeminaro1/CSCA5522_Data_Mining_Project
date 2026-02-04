@@ -197,12 +197,15 @@ class ModelTrainer:
                 mlflow.log_param("n_test_samples", len(X_test))
             
             # Log model
-            model_name = f"{model_type}_detector" if register_model else None
-            mlflow.sklearn.log_model(
-                model,
-                "model",
-                registered_model_name=model_name
-            )
+            try:
+                model_name = f"{model_type}_detector" if register_model else None
+                mlflow.sklearn.log_model(
+                    model,
+                    "model",
+                    registered_model_name=model_name
+                )
+            except Exception as e:
+                logger.warning("Model artifact logging failed (non-critical): %s", e)
             
             return run_id
     

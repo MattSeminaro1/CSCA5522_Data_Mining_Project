@@ -291,8 +291,20 @@ class Database:
     # Query Methods
     
     def get_data_status(self) -> pd.DataFrame:
-        """Get data availability status for all symbols."""
-        return self.fetch_df("SELECT * FROM v_data_status")
+        """Get data availability status per symbol."""
+        query = """
+        SET timescaledb.enable_vectorized_aggregation = off;
+        SELECT 
+            symbol,
+            MIN(time) as earliest,
+            MAX(time) as latest,
+            COUNT(*) as total_rows,
+            MAX(time) - MIN(time) as time_span
+        FROM raw_ohlcv
+        GROUP BY symbol
+        ORDER BY symbol
+        """
+        return pd.read_sql(query, self.engine)
     
     def get_data_range(self, symbol: str) -> Optional[tuple]:
         """Get the time range of data available for a symbol."""
