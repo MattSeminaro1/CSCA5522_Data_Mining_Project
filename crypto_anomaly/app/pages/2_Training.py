@@ -407,7 +407,7 @@ with tab3:
         
         mlflow.set_tracking_uri(settings.mlflow_tracking_uri)
         
-        st.markdown(f"**MLflow Tracking URI:** `{settings.mlflow_tracking_uri}`")
+        st.markdown(f"**MLflow Tracking URI:** `{settings.mlflow_external_uri}`")
         
         try:
             experiments = mlflow.search_experiments()
@@ -447,7 +447,7 @@ with tab3:
             st.warning(f"Could not list experiments: {e}")
         
         st.markdown("---")
-        st.markdown(f"[Open MLflow UI]({settings.mlflow_tracking_uri})")
+        st.markdown(f"[Open MLflow UI]({settings.mlflow_external_uri})")
         
     except ImportError:
         st.warning("MLflow not installed.")

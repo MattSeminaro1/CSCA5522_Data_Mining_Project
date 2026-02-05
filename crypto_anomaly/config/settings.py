@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     
     # MLflow
     mlflow_tracking_uri: str = Field(default="http://localhost:5001")
+    mlflow_external_uri: str = Field(default="http://localhost:5001")  # For browser links
     mlflow_experiment_name: str = Field(default="crypto_anomaly_detection")
     
     # MinIO (S3-compatible storage)
