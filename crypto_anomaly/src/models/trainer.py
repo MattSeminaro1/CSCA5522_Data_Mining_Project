@@ -78,6 +78,7 @@ class ModelTrainer:
         params: Optional[dict] = None,
         X_test: Optional[np.ndarray] = None,
         tags: Optional[dict] = None,
+        run_name: Optional[str] = None,
         register_model: bool = False
     ) -> tuple[BaseAnomalyDetector, Optional[str]]:
         """
@@ -134,6 +135,7 @@ class ModelTrainer:
                     test_anomaly_rate=test_anomaly_rate,
                     model_params=model_params,
                     tags=tags,
+                    run_name=run_name,
                     register_model=register_model
                 )
             except Exception as e:
@@ -161,6 +163,7 @@ class ModelTrainer:
         test_anomaly_rate: Optional[float],
         model_params: dict,
         tags: Optional[dict],
+        run_name: Optional[str],
         register_model: bool
     ) -> str:
         """Log training run to MLflow."""

@@ -60,7 +60,12 @@ with tab1:
     
     with col1:
         st.markdown("#### Model Configuration")
-        
+        model_name = st.text_input(
+            "Model Name (optional)",
+            placeholder="e.g., btc_volatility_detector",
+            help="A descriptive name to identify this model. If empty, one will be auto-generated."
+        )
+                
         model_type = st.selectbox(
             "Model Type",
             options=["kmeans", "gmm"],
@@ -176,12 +181,18 @@ with tab1:
                         'contamination': contamination,
                         'covariance_type': covariance_type
                     }
-                
+                if model_name.strip():
+                    run_name = model_name.strip()
+                else:
+                    symbols_short = '_'.join([s[:3] for s in selected_symbols[:3]])
+                    run_name = f"{model_type}_k{n_clusters}_{symbols_short}_cont{contamination}"
+                    
                 trainer = ModelTrainer(use_mlflow=True)
                 model, run_id = trainer.train(
                     model_type=model_type,
                     X_train=X_train,
                     feature_names=selected_features,
+                    run_name=run_name,
                     params=params,
                     X_test=X_test,
                     tags={
