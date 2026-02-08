@@ -54,11 +54,8 @@ def get_mlflow_models() -> tuple[list[str], dict[str, str]]:
                 for _, run in runs.iterrows():
                     model_type = run.get('params.model_type', 'unknown')
                     run_id = run['run_id']
-                    sil = run.get('metrics.silhouette_score', 0)
-                    if pd.notna(sil):
-                        label = f"{model_type} - {run_id[:8]} (sil: {sil:.3f})"
-                    else:
-                        label = f"{model_type} - {run_id[:8]}"
+                    run_name = run.get('tags.mlflow.runName', '')
+                    label = f"{model_type}-{run_name}-{run_id[:8]}" if run_name else f"{model_type}-{run_id[:8]}"
                     model_options.append(label)
                     run_id_map[label] = run_id
     except Exception:

@@ -169,7 +169,7 @@ class ModelTrainer:
         """Log training run to MLflow."""
         mlflow = self._mlflow
         
-        with mlflow.start_run() as run:
+        with mlflow.start_run(run_name=run_name) as run:
             run_id = run.info.run_id
             
             # Log parameters
@@ -201,7 +201,7 @@ class ModelTrainer:
             
             # Log model
             try:
-                model_name = f"{model_type}_detector" if register_model else None
+                model_name = (run_name or f"{model_type}_detector") if register_model else None
                 mlflow.sklearn.log_model(
                     model,
                     "model",

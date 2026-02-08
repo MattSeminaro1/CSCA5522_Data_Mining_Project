@@ -187,7 +187,11 @@ with tab1:
                     symbols_short = '_'.join([s[:3] for s in selected_symbols[:3]])
                     run_name = f"{model_type}_k{n_clusters}_{symbols_short}_cont{contamination}"
                     
-                trainer = ModelTrainer(use_mlflow=True)
+                from config.settings import settings
+                trainer = ModelTrainer(
+                    mlflow_tracking_uri=settings.mlflow_tracking_uri,
+                    use_mlflow=True
+                )
                 model, run_id = trainer.train(
                     model_type=model_type,
                     X_train=X_train,
@@ -438,14 +442,18 @@ with tab3:
                             if not runs.empty:
                                 st.markdown(f"**{len(runs)} runs found**")
                                 
-                                display_cols = ['run_id', 'status', 'start_time']
+                                # Add run_name column from MLflow tags
+                                if 'tags.mlflow.runName' in runs.columns:
+                                    runs.insert(0, 'run_name', runs['tags.mlflow.runName'])
+
+                                display_cols = ['run_name', 'run_id', 'status', 'start_time']
                                 param_cols = [c for c in runs.columns if c.startswith('params.')]
                                 metric_cols = [c for c in runs.columns if c.startswith('metrics.')]
-                                
+
                                 display_cols.extend(param_cols[:5])
                                 display_cols.extend(metric_cols[:5])
                                 display_cols = [c for c in display_cols if c in runs.columns]
-                                
+
                                 st.dataframe(runs[display_cols], use_container_width=True)
                             else:
                                 st.info("No runs found in this experiment.")
