@@ -29,11 +29,13 @@ class KMeansAnomalyDetector(BaseAnomalyDetector):
         scale_features: bool = True,
         n_init: int = 10,
         max_iter: int = 300,
-        random_state: int = 42
+        random_state: int = 42,
+        init: str = 'k-means++',
+        algorithm: str = 'lloyd'
     ):
         """
         Initialize K-Means detector.
-        
+
         Args:
             n_clusters: Number of clusters (k)
             contamination: Expected proportion of anomalies
@@ -41,19 +43,25 @@ class KMeansAnomalyDetector(BaseAnomalyDetector):
             n_init: Number of random initializations
             max_iter: Maximum iterations per run
             random_state: Random seed for reproducibility
+            init: Initialization method ('k-means++' or 'random')
+            algorithm: K-Means algorithm ('lloyd' or 'elkan')
         """
         super().__init__(contamination, scale_features)
-        
+
         self.n_clusters = n_clusters
         self.n_init = n_init
         self.max_iter = max_iter
         self.random_state = random_state
-        
+        self.init = init
+        self.algorithm = algorithm
+
         self.model = KMeans(
             n_clusters=n_clusters,
             n_init=n_init,
             max_iter=max_iter,
-            random_state=random_state
+            random_state=random_state,
+            init=init,
+            algorithm=algorithm
         )
         
         self.cluster_labels_: Optional[np.ndarray] = None
@@ -116,6 +124,8 @@ class KMeansAnomalyDetector(BaseAnomalyDetector):
             'n_init': self.n_init,
             'max_iter': self.max_iter,
             'random_state': self.random_state,
+            'init': self.init,
+            'algorithm': self.algorithm,
             'inertia': self.inertia_,
             'silhouette_score': self.silhouette_score_
         }

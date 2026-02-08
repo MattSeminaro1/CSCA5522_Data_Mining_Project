@@ -50,7 +50,7 @@ def get_available_symbols() -> list[str]:
 
 
 # Tabs
-tab1, tab2, tab3 = st.tabs(["Train Model", "Find Optimal K", "MLflow Experiments"])
+tab1, tab2, tab3 = st.tabs(["Train Model", "Hyperparameter Tuning", "MLflow Experiments"])
 
 
 with tab1:
@@ -95,7 +95,64 @@ with tab1:
                 options=["full", "tied", "diag", "spherical"],
                 help="Type of covariance parameters to use"
             )
-    
+
+        with st.expander("Advanced Parameters"):
+            n_init = st.slider(
+                "Number of Initializations (n_init)",
+                min_value=1,
+                max_value=50,
+                value=10 if model_type == "kmeans" else 5,
+                help="Number of times the algorithm runs with different seeds. Best result is kept."
+            )
+
+            max_iter = st.slider(
+                "Max Iterations",
+                min_value=50,
+                max_value=1000,
+                value=300 if model_type == "kmeans" else 200,
+                step=50,
+                help="Maximum iterations per run. Increase if the model does not converge."
+            )
+
+            random_state = st.number_input(
+                "Random Seed",
+                min_value=0,
+                max_value=99999,
+                value=42,
+                help="Seed for reproducibility. Same seed produces identical results."
+            )
+
+            scale_features = st.checkbox(
+                "Scale Features (StandardScaler)",
+                value=True,
+                help="Standardize features before clustering. Recommended unless features are already on the same scale."
+            )
+
+            if model_type == "kmeans":
+                init_method = st.selectbox(
+                    "Initialization Method",
+                    options=["k-means++", "random"],
+                    help="k-means++ selects initial centroids intelligently. random picks random data points."
+                )
+                algorithm = st.selectbox(
+                    "Algorithm",
+                    options=["lloyd", "elkan"],
+                    help="lloyd is the standard algorithm. elkan can be faster for well-separated clusters."
+                )
+            else:
+                init_params = st.selectbox(
+                    "Initialization Method",
+                    options=["kmeans", "k-means++", "random", "random_from_data"],
+                    help="Method for initializing GMM weights, means, and covariances."
+                )
+                reg_covar = st.select_slider(
+                    "Covariance Regularization (reg_covar)",
+                    options=[1e-8, 1e-7, 1e-6, 1e-5, 1e-4, 1e-3],
+                    value=1e-6,
+                    format_func=lambda x: f"{x:.0e}",
+                    help="Regularization on covariance diagonal. Increase if you get convergence errors."
+                )
+
     with col2:
         st.markdown("#### Data Configuration")
         
@@ -173,13 +230,25 @@ with tab1:
                 if model_type == 'kmeans':
                     params = {
                         'n_clusters': n_clusters,
-                        'contamination': contamination
+                        'contamination': contamination,
+                        'n_init': n_init,
+                        'max_iter': max_iter,
+                        'random_state': random_state,
+                        'scale_features': scale_features,
+                        'init': init_method,
+                        'algorithm': algorithm,
                     }
                 else:
                     params = {
                         'n_components': n_clusters,
                         'contamination': contamination,
-                        'covariance_type': covariance_type
+                        'covariance_type': covariance_type,
+                        'n_init': n_init,
+                        'max_iter': max_iter,
+                        'random_state': random_state,
+                        'scale_features': scale_features,
+                        'init_params': init_params,
+                        'reg_covar': reg_covar,
                     }
                 if model_name.strip():
                     run_name = model_name.strip()
@@ -273,144 +342,533 @@ with tab1:
 
 
 with tab2:
-    st.subheader("Find Optimal Number of Clusters")
-    
-    st.markdown("Use the elbow method and silhouette analysis to find the optimal number of clusters.")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        opt_model_type = st.selectbox(
+    st.subheader("Hyperparameter Tuning")
+    st.markdown("Find the best model parameters automatically or configure a custom search.")
+
+    # ── Auto-Tune (one-click) ───────────────────────────────────────
+    st.markdown("#### Auto-Tune")
+    st.markdown(
+        "Select a model type and your data, then press the button. "
+        "A curated grid search runs automatically and recommends the best parameters."
+    )
+
+    auto_col1, auto_col2 = st.columns(2)
+
+    with auto_col1:
+        auto_model_type = st.selectbox(
             "Model Type",
             options=["kmeans", "gmm"],
-            key="opt_model",
-            format_func=lambda x: {"kmeans": "K-Means", "gmm": "GMM"}[x]
+            key="auto_model_type",
+            format_func=lambda x: {"kmeans": "K-Means Clustering", "gmm": "Gaussian Mixture Model"}[x]
         )
-        
-        k_min, k_max = st.slider(
-            "K Range",
-            min_value=2,
-            max_value=20,
-            value=(2, 12),
-            key="k_range"
+
+        available_symbols_auto = get_available_symbols()
+        auto_symbols = st.multiselect(
+            "Training Symbols",
+            options=available_symbols_auto,
+            default=available_symbols_auto[:min(3, len(available_symbols_auto))] if available_symbols_auto else [],
+            key="auto_symbols"
         )
-    
-    with col2:
-        available_symbols = get_available_symbols()
-        
-        opt_selected_symbols = st.multiselect(
-            "Symbols for Analysis",
-            options=available_symbols,
-            default=available_symbols[:min(2, len(available_symbols))] if available_symbols else [],
-            key="opt_symbols"
-        )
-        
-        opt_days = st.slider(
-            "Days of Data",
-            min_value=30,
-            max_value=180,
-            value=90,
-            key="opt_days"
-        )
-    
-    can_analyze = len(opt_selected_symbols) > 0
-    
-    if st.button("Find Optimal K", disabled=not can_analyze):
-        with st.spinner("Analyzing..."):
+
+    with auto_col2:
+        auto_days = st.slider("Training Days", min_value=30, max_value=365, value=180, key="auto_days")
+        auto_test_split = st.slider("Test Split", min_value=0.1, max_value=0.4, value=0.2, key="auto_test_split")
+
+    can_auto = len(auto_symbols) > 0
+
+    if auto_model_type == "kmeans":
+        auto_grid = {
+            'n_clusters': [3, 4, 5, 6, 7, 8, 10],
+            'contamination': [0.03, 0.05, 0.10],
+            'init': ['k-means++', 'random'],
+            'algorithm': ['lloyd', 'elkan'],
+        }
+        auto_metric = "silhouette_score"
+        n_auto = 3 * 7 * 2 * 2  # 84 combinations
+    else:
+        auto_grid = {
+            'n_components': [3, 4, 5, 6, 7, 8, 10],
+            'contamination': [0.03, 0.05, 0.10],
+            'covariance_type': ['full', 'tied', 'diag'],
+            'init_params': ['kmeans', 'k-means++'],
+            'reg_covar': [1e-6, 1e-4],
+        }
+        auto_metric = "silhouette_score"
+        n_auto = 7 * 3 * 3 * 2 * 2  # 252 combinations
+
+    auto_features = ["volatility", "log_return", "volume_ratio", "return_std", "price_range", "volatility_ratio"]
+    auto_cluster_label = "n_clusters" if auto_model_type == "kmeans" else "n_components"
+
+    with st.expander("Preview auto-tune grid", expanded=False):
+        st.json({k: str(v) for k, v in auto_grid.items()})
+        st.caption(f"{n_auto} combinations will be evaluated, optimizing **{auto_metric}**.")
+
+    if st.button("Find Best Parameters", type="primary", disabled=not can_auto, key="auto_tune"):
+        with st.spinner("Loading and preparing data..."):
             try:
                 from src.features.registry import compute_features, get_feature_matrix
-                from src.models.trainer import find_best_k
-                
-                combined = load_training_data(opt_selected_symbols, opt_days)
-                
+                from src.models.trainer import ModelTrainer
+
+                combined = load_training_data(auto_symbols, auto_days)
                 if combined.empty:
-                    st.error("No data loaded.")
+                    st.error("No data loaded. Check that selected symbols have data.")
                     st.stop()
-                
-                default_features = ["volatility", "log_return", "volume_ratio", "return_std", "price_range", "volatility_ratio"]
-                df_features = compute_features(combined, default_features)
-                X, _ = get_feature_matrix(df_features, default_features)
-                
-                max_samples = 50000
-                if len(X) > max_samples:
-                    idx = np.random.choice(len(X), max_samples, replace=False)
-                    X = X[idx]
-                
-                st.info(f"Analyzing {len(X):,} samples...")
-                
-                k_range = range(k_min, k_max + 1)
-                results = find_best_k(X, opt_model_type, k_range)
-                
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    if opt_model_type == 'kmeans':
-                        fig = px.line(
-                            x=results['k'],
-                            y=results['inertia'],
-                            title="Elbow Method (Inertia)",
-                            labels={'x': 'Number of Clusters (K)', 'y': 'Inertia'},
-                            markers=True
-                        )
-                        if 'elbow_k' in results:
-                            fig.add_vline(
-                                x=results['elbow_k'], 
-                                line_dash="dash",
-                                annotation_text=f"Elbow: {results['elbow_k']}"
-                            )
-                    else:
-                        fig = px.line(
-                            x=results['n'],
-                            y=results['bic'],
-                            title="BIC Score (Lower is Better)",
-                            labels={'x': 'Number of Components', 'y': 'BIC'},
-                            markers=True
-                        )
-                        if 'best_bic_n' in results:
-                            fig.add_vline(
-                                x=results['best_bic_n'], 
-                                line_dash="dash",
-                                annotation_text=f"Best: {results['best_bic_n']}"
-                            )
-                    
-                    st.plotly_chart(fig, use_container_width=True)
-                
-                with col2:
-                    k_values = results.get('k', results.get('n'))
-                    fig = px.line(
-                        x=k_values,
-                        y=results['silhouette'],
-                        title="Silhouette Score (Higher is Better)",
-                        labels={'x': 'Number of Clusters', 'y': 'Silhouette Score'},
-                        markers=True
-                    )
-                    
-                    best_sil_key = 'best_silhouette_k' if opt_model_type == 'kmeans' else 'best_silhouette_n'
-                    if best_sil_key in results:
-                        fig.add_vline(
-                            x=results[best_sil_key], 
-                            line_dash="dash",
-                            annotation_text=f"Best: {results[best_sil_key]}"
-                        )
-                    
-                    st.plotly_chart(fig, use_container_width=True)
-                
-                st.markdown("#### Recommendations")
-                
-                if opt_model_type == 'kmeans':
-                    elbow_k = results.get('elbow_k', 'N/A')
-                    best_sil_k = results.get('best_silhouette_k', 'N/A')
-                    st.info(f"Elbow Method suggests K = {elbow_k}. Best Silhouette at K = {best_sil_k}.")
-                else:
-                    best_bic = results.get('best_bic_n', 'N/A')
-                    best_sil = results.get('best_silhouette_n', 'N/A')
-                    st.info(f"Best BIC at N = {best_bic}. Best Silhouette at N = {best_sil}.")
-                    
+
+                df_features = compute_features(combined, auto_features)
+                X, df_clean = get_feature_matrix(df_features, auto_features)
+
+                split_idx = int(len(X) * (1 - auto_test_split))
+                X_train, X_test = X[:split_idx], X[split_idx:]
+
+                st.info(f"Data prepared: {len(X_train):,} train / {len(X_test):,} test samples")
             except Exception as e:
-                st.error(f"Analysis failed: {e}")
+                st.error(f"Data preparation failed: {e}")
+                st.stop()
+
+        with st.spinner(f"Auto-tuning ({n_auto} combinations)... this may take a few minutes."):
+            try:
+                from config.settings import settings
+                trainer = ModelTrainer(
+                    mlflow_tracking_uri=settings.mlflow_tracking_uri,
+                    use_mlflow=True
+                )
+
+                tuning_results = trainer.train_with_tuning(
+                    model_type=auto_model_type,
+                    X_train=X_train,
+                    feature_names=auto_features,
+                    param_grid=auto_grid,
+                    X_test=X_test,
+                    metric=auto_metric,
+                    tags={
+                        'symbols': ','.join(auto_symbols),
+                        'source': 'streamlit_auto_tune'
+                    }
+                )
+
+                best_model = tuning_results['best_model']
+                best_score = tuning_results['best_score']
+                best_run_id = tuning_results['best_run_id']
+                all_results = tuning_results['all_results']
+
+                if best_model is None:
+                    st.warning("Auto-tune completed but no valid results were found.")
+                    st.stop()
+
+                st.success(f"Auto-tune complete! Best silhouette score: **{best_score:.4f}**")
+
+                # ── Recommended Parameters ──
+                st.markdown("#### Recommended Parameters")
+                st.markdown("Use these values in the **Train Model** tab to train your final model.")
+
+                best_result = next((r for r in all_results if r['run_id'] == best_run_id), None)
+                best_params = best_result['params'] if best_result else best_model.get_model_params()
+
+                # Display as clean key-value metrics
+                param_cols = st.columns(min(len(best_params), 4))
+                for i, (key, value) in enumerate(best_params.items()):
+                    with param_cols[i % len(param_cols)]:
+                        display_val = f"{value:.0e}" if isinstance(value, float) and value < 0.001 else str(value)
+                        st.metric(key, display_val)
+
+                # Copyable code block
+                param_str = ",\n    ".join(f'"{k}": {repr(v)}' for k, v in best_params.items())
+                st.code(f"{{\n    {param_str}\n}}", language="python")
+
+                # ── Performance Summary ──
+                st.markdown("#### Best Model Performance")
+                model_params = best_model.get_model_params()
+                perf_col1, perf_col2, perf_col3, perf_col4 = st.columns(4)
+
+                with perf_col1:
+                    sil = model_params.get('silhouette_score')
+                    st.metric("Silhouette Score", f"{sil:.4f}" if sil else "N/A")
+                with perf_col2:
+                    st.metric("Threshold", f"{best_model.threshold:.4f}")
+                with perf_col3:
+                    train_preds = best_model.predict(X_train)
+                    st.metric("Train Anomaly Rate", f"{train_preds.mean():.2%}")
+                with perf_col4:
+                    test_preds = best_model.predict(X_test)
+                    st.metric("Test Anomaly Rate", f"{test_preds.mean():.2%}")
+
+                if best_run_id:
+                    st.info(f"Best MLflow Run ID: `{best_run_id}`")
+
+                # ── Visualization ──
+                with st.expander("Detailed Results", expanded=False):
+                    results_rows = []
+                    for r in all_results:
+                        row = {**r['params']}
+                        row[auto_metric] = r.get(auto_metric)
+                        row['threshold'] = r.get('threshold')
+                        row['run_id'] = r.get('run_id', '')[:8] if r.get('run_id') else ''
+                        results_rows.append(row)
+
+                    results_df = pd.DataFrame(results_rows)
+                    if auto_metric in results_df.columns:
+                        results_df = results_df.sort_values(auto_metric, ascending=False)
+
+                    st.markdown("##### All Results")
+                    st.dataframe(results_df, use_container_width=True)
+
+                    st.markdown("##### Results Visualization")
+                    if auto_metric in results_df.columns and auto_cluster_label in results_df.columns:
+                        viz_col1, viz_col2 = st.columns(2)
+
+                        with viz_col1:
+                            fig = px.scatter(
+                                results_df,
+                                x=auto_cluster_label,
+                                y=auto_metric,
+                                color='contamination' if 'contamination' in results_df.columns else None,
+                                title=f"{auto_metric} vs {auto_cluster_label}",
+                                hover_data=results_df.columns.tolist()
+                            )
+                            if best_result:
+                                fig.add_trace(go.Scatter(
+                                    x=[best_result['params'].get(auto_cluster_label)],
+                                    y=[best_result.get(auto_metric)],
+                                    mode='markers',
+                                    marker=dict(size=15, symbol='star', color='red', line=dict(width=2, color='black')),
+                                    name='Best',
+                                    showlegend=True
+                                ))
+                            st.plotly_chart(fig, use_container_width=True)
+
+                        with viz_col2:
+                            fig = px.box(
+                                results_df,
+                                x=auto_cluster_label,
+                                y=auto_metric,
+                                title=f"{auto_metric} Distribution by {auto_cluster_label}"
+                            )
+                            st.plotly_chart(fig, use_container_width=True)
+
+            except Exception as e:
+                st.error(f"Auto-tune failed: {e}")
                 import traceback
                 with st.expander("Error Details"):
                     st.code(traceback.format_exc())
+
+    st.markdown("---")
+
+    # ── Custom Grid Search ──────────────────────────────────────────
+    with st.expander("Custom Grid Search", expanded=False):
+        st.markdown("Build your own parameter grid for full control over the search space.")
+
+        tune_col1, tune_col2 = st.columns(2)
+
+        with tune_col1:
+            st.markdown("##### Model & Metric")
+
+            tune_model_type = st.selectbox(
+                "Model Type",
+                options=["kmeans", "gmm"],
+                key="tune_model_type",
+                format_func=lambda x: {"kmeans": "K-Means Clustering", "gmm": "Gaussian Mixture Model"}[x]
+            )
+
+            if tune_model_type == "gmm":
+                metric_options = ["silhouette_score", "bic"]
+                metric_help = "silhouette_score: higher is better. bic: lower is better."
+            else:
+                metric_options = ["silhouette_score"]
+                metric_help = "silhouette_score: higher is better (cluster separation)."
+
+            tune_metric = st.selectbox(
+                "Optimization Metric",
+                options=metric_options,
+                help=metric_help,
+                key="tune_metric"
+            )
+
+        with tune_col2:
+            st.markdown("##### Data Configuration")
+
+            available_symbols_tune = get_available_symbols()
+
+            tune_symbols = st.multiselect(
+                "Training Symbols",
+                options=available_symbols_tune,
+                default=available_symbols_tune[:min(3, len(available_symbols_tune))] if available_symbols_tune else [],
+                key="tune_symbols"
+            )
+
+            from src.features.registry import feature_registry as _tune_fr
+            _tune_all_features = _tune_fr.list_features()
+            _tune_default = ["volatility", "log_return", "volume_ratio", "return_std", "price_range", "volatility_ratio"]
+            _tune_default = [f for f in _tune_default if f in _tune_all_features]
+
+            tune_features = st.multiselect(
+                "Features",
+                options=_tune_all_features,
+                default=_tune_default,
+                key="tune_features"
+            )
+
+            tune_days = st.slider("Training Days", min_value=30, max_value=365, value=180, key="tune_days")
+            tune_test_split = st.slider("Test Split", min_value=0.1, max_value=0.4, value=0.2, key="tune_test_split")
+
+        st.markdown("##### Parameter Grid")
+        st.caption("Select which parameters to search over. All combinations will be evaluated.")
+
+        param_grid: dict[str, list] = {}
+        cluster_label = "n_clusters" if tune_model_type == "kmeans" else "n_components"
+
+        grid_col1, grid_col2 = st.columns(2)
+
+        with grid_col1:
+            cluster_min, cluster_max = st.slider(
+                f"Cluster/Component Range ({cluster_label})",
+                min_value=2, max_value=20, value=(3, 8),
+                key="tune_cluster_range"
+            )
+            param_grid[cluster_label] = list(range(cluster_min, cluster_max + 1))
+
+            tune_contamination_values = st.multiselect(
+                "Contamination Values",
+                options=[0.01, 0.02, 0.03, 0.05, 0.07, 0.10, 0.15, 0.20],
+                default=[0.05],
+                key="tune_contamination",
+                help="Select one or more contamination rates to search."
+            )
+            if tune_contamination_values:
+                param_grid['contamination'] = sorted(tune_contamination_values)
+
+        with grid_col2:
+            if tune_model_type == "gmm":
+                tune_cov_types = st.multiselect(
+                    "Covariance Types",
+                    options=["full", "tied", "diag", "spherical"],
+                    default=["full"],
+                    key="tune_cov_types",
+                    help="GMM covariance parameterizations to try."
+                )
+                if tune_cov_types:
+                    param_grid['covariance_type'] = tune_cov_types
+
+            tune_n_init_values = st.multiselect(
+                "n_init Values",
+                options=[1, 3, 5, 10, 15, 20],
+                default=[10] if tune_model_type == "kmeans" else [5],
+                key="tune_n_init",
+                help="Number of random initializations to try."
+            )
+            if tune_n_init_values:
+                param_grid['n_init'] = sorted(tune_n_init_values)
+
+            if tune_model_type == "kmeans":
+                tune_init_methods = st.multiselect(
+                    "Initialization Method",
+                    options=["k-means++", "random"],
+                    default=[],
+                    key="tune_init",
+                    help="Centroid initialization strategies to try."
+                )
+                if tune_init_methods:
+                    param_grid['init'] = tune_init_methods
+
+                tune_algorithms = st.multiselect(
+                    "Algorithm",
+                    options=["lloyd", "elkan"],
+                    default=[],
+                    key="tune_algorithm",
+                    help="K-Means algorithm variants to try."
+                )
+                if tune_algorithms:
+                    param_grid['algorithm'] = tune_algorithms
+            else:
+                tune_init_params = st.multiselect(
+                    "Initialization Method",
+                    options=["kmeans", "k-means++", "random", "random_from_data"],
+                    default=[],
+                    key="tune_init_params",
+                    help="GMM weight/mean initialization strategies to try."
+                )
+                if tune_init_params:
+                    param_grid['init_params'] = tune_init_params
+
+                tune_reg_covar = st.multiselect(
+                    "Covariance Regularization (reg_covar)",
+                    options=[1e-8, 1e-7, 1e-6, 1e-5, 1e-4, 1e-3],
+                    default=[],
+                    key="tune_reg_covar",
+                    format_func=lambda x: f"{x:.0e}",
+                    help="Regularization values to try. Leave empty to use default (1e-6)."
+                )
+                if tune_reg_covar:
+                    param_grid['reg_covar'] = sorted(tune_reg_covar)
+
+        with st.expander("Additional Grid Parameters", expanded=False):
+            adv_col1, adv_col2 = st.columns(2)
+
+            with adv_col1:
+                tune_max_iter_values = st.multiselect(
+                    "max_iter Values",
+                    options=[50, 100, 200, 300, 500, 1000],
+                    default=[],
+                    key="tune_max_iter",
+                    help="Max iterations to try. Leave empty to use default."
+                )
+                if tune_max_iter_values:
+                    param_grid['max_iter'] = sorted(tune_max_iter_values)
+
+            with adv_col2:
+                tune_scale_options = st.multiselect(
+                    "scale_features",
+                    options=[True, False],
+                    default=[],
+                    key="tune_scale",
+                    format_func=lambda x: "Yes" if x else "No",
+                    help="Whether to standardize features. Leave empty to use default (True)."
+                )
+                if tune_scale_options:
+                    param_grid['scale_features'] = tune_scale_options
+
+        from sklearn.model_selection import ParameterGrid
+        n_combinations = len(list(ParameterGrid(param_grid))) if param_grid else 0
+
+        st.info(f"**{n_combinations}** parameter combinations will be evaluated.")
+
+        with st.expander("Preview Parameter Grid", expanded=False):
+            st.json({k: str(v) for k, v in param_grid.items()})
+
+        can_tune = len(tune_symbols) > 0 and len(tune_features) > 0 and n_combinations > 0
+
+        if n_combinations > 100:
+            st.warning(f"Large grid ({n_combinations} combinations). This may take a long time.")
+
+        if st.button("Run Grid Search", type="primary", disabled=not can_tune, key="run_grid_search"):
+            with st.spinner("Loading and preparing data..."):
+                try:
+                    from src.features.registry import compute_features, get_feature_matrix
+                    from src.models.trainer import ModelTrainer
+
+                    combined = load_training_data(tune_symbols, tune_days)
+                    if combined.empty:
+                        st.error("No data loaded. Check that selected symbols have data.")
+                        st.stop()
+
+                    df_features = compute_features(combined, tune_features)
+                    X, df_clean = get_feature_matrix(df_features, tune_features)
+
+                    split_idx = int(len(X) * (1 - tune_test_split))
+                    X_train, X_test = X[:split_idx], X[split_idx:]
+
+                    st.info(f"Data prepared: {len(X_train):,} train / {len(X_test):,} test samples, {len(tune_features)} features")
+                except Exception as e:
+                    st.error(f"Data preparation failed: {e}")
+                    st.stop()
+
+            with st.spinner(f"Running grid search ({n_combinations} combinations)..."):
+                try:
+                    from config.settings import settings
+                    trainer = ModelTrainer(
+                        mlflow_tracking_uri=settings.mlflow_tracking_uri,
+                        use_mlflow=True
+                    )
+
+                    tuning_results = trainer.train_with_tuning(
+                        model_type=tune_model_type,
+                        X_train=X_train,
+                        feature_names=tune_features,
+                        param_grid=param_grid,
+                        X_test=X_test,
+                        metric=tune_metric,
+                        tags={
+                            'symbols': ','.join(tune_symbols),
+                            'source': 'streamlit_grid_search'
+                        }
+                    )
+
+                    best_model = tuning_results['best_model']
+                    best_score = tuning_results['best_score']
+                    best_run_id = tuning_results['best_run_id']
+                    all_results = tuning_results['all_results']
+
+                    if best_model is None:
+                        st.warning("Grid search completed but no valid results were found.")
+                        st.stop()
+
+                    st.success(f"Grid search complete! Best {tune_metric}: **{best_score:.4f}**")
+
+                    if best_run_id:
+                        st.info(f"Best MLflow Run ID: `{best_run_id}`")
+
+                    st.markdown("##### Best Parameters")
+                    best_result = next((r for r in all_results if r['run_id'] == best_run_id), None)
+                    if best_result:
+                        st.json(best_result['params'])
+
+                    st.markdown("##### All Results")
+                    results_rows = []
+                    for r in all_results:
+                        row = {**r['params']}
+                        row[tune_metric] = r.get(tune_metric)
+                        row['threshold'] = r.get('threshold')
+                        row['run_id'] = r.get('run_id', '')[:8] if r.get('run_id') else ''
+                        results_rows.append(row)
+
+                    results_df = pd.DataFrame(results_rows)
+                    if tune_metric in results_df.columns:
+                        results_df = results_df.sort_values(tune_metric, ascending=(tune_metric == 'bic'))
+                    st.dataframe(results_df, use_container_width=True)
+
+                    st.markdown("##### Results Visualization")
+                    if tune_metric in results_df.columns and cluster_label in results_df.columns:
+                        viz_col1, viz_col2 = st.columns(2)
+
+                        with viz_col1:
+                            fig = px.scatter(
+                                results_df,
+                                x=cluster_label,
+                                y=tune_metric,
+                                color='contamination' if 'contamination' in results_df.columns else None,
+                                title=f"{tune_metric} vs {cluster_label}",
+                                hover_data=results_df.columns.tolist()
+                            )
+                            if best_result:
+                                fig.add_trace(go.Scatter(
+                                    x=[best_result['params'].get(cluster_label)],
+                                    y=[best_result.get(tune_metric)],
+                                    mode='markers',
+                                    marker=dict(size=15, symbol='star', color='red', line=dict(width=2, color='black')),
+                                    name='Best',
+                                    showlegend=True
+                                ))
+                            st.plotly_chart(fig, use_container_width=True)
+
+                        with viz_col2:
+                            fig = px.box(
+                                results_df,
+                                x=cluster_label,
+                                y=tune_metric,
+                                title=f"{tune_metric} Distribution by {cluster_label}"
+                            )
+                            st.plotly_chart(fig, use_container_width=True)
+
+                    st.markdown("##### Best Model Performance")
+                    model_params = best_model.get_model_params()
+                    perf_col1, perf_col2, perf_col3, perf_col4 = st.columns(4)
+
+                    with perf_col1:
+                        sil = model_params.get('silhouette_score')
+                        st.metric("Silhouette Score", f"{sil:.4f}" if sil else "N/A")
+                    with perf_col2:
+                        st.metric("Threshold", f"{best_model.threshold:.4f}")
+                    with perf_col3:
+                        train_preds = best_model.predict(X_train)
+                        st.metric("Train Anomaly Rate", f"{train_preds.mean():.2%}")
+                    with perf_col4:
+                        test_preds = best_model.predict(X_test)
+                        st.metric("Test Anomaly Rate", f"{test_preds.mean():.2%}")
+
+                except Exception as e:
+                    st.error(f"Grid search failed: {e}")
+                    import traceback
+                    with st.expander("Error Details"):
+                        st.code(traceback.format_exc())
 
 
 with tab3:

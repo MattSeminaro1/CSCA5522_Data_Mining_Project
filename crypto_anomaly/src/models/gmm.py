@@ -35,11 +35,13 @@ class GMMAnommalyDetector(BaseAnomalyDetector):
         covariance_type: str = 'full',
         n_init: int = 5,
         max_iter: int = 200,
-        random_state: int = 42
+        random_state: int = 42,
+        init_params: str = 'kmeans',
+        reg_covar: float = 1e-6
     ):
         """
         Initialize GMM detector.
-        
+
         Args:
             n_components: Number of mixture components
             contamination: Expected proportion of anomalies
@@ -48,21 +50,27 @@ class GMMAnommalyDetector(BaseAnomalyDetector):
             n_init: Number of random initializations
             max_iter: Maximum EM iterations
             random_state: Random seed for reproducibility
+            init_params: Weight initialization method ('kmeans', 'k-means++', 'random', 'random_from_data')
+            reg_covar: Regularization added to covariance diagonal for numerical stability
         """
         super().__init__(contamination, scale_features)
-        
+
         self.n_components = n_components
         self.covariance_type = covariance_type
         self.n_init = n_init
         self.max_iter = max_iter
         self.random_state = random_state
-        
+        self.init_params = init_params
+        self.reg_covar = reg_covar
+
         self.model = GaussianMixture(
             n_components=n_components,
             covariance_type=covariance_type,
             n_init=n_init,
             max_iter=max_iter,
-            random_state=random_state
+            random_state=random_state,
+            init_params=init_params,
+            reg_covar=reg_covar
         )
         
         self.bic_: Optional[float] = None
@@ -150,6 +158,8 @@ class GMMAnommalyDetector(BaseAnomalyDetector):
             'n_init': self.n_init,
             'max_iter': self.max_iter,
             'random_state': self.random_state,
+            'init_params': self.init_params,
+            'reg_covar': self.reg_covar,
             'bic': self.bic_,
             'aic': self.aic_,
             'silhouette_score': self.silhouette_score_,

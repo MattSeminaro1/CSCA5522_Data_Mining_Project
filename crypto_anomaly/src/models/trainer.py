@@ -218,78 +218,99 @@ class ModelTrainer:
         X_train: np.ndarray,
         feature_names: list[str],
         param_grid: dict,
+        feature_subsets: Optional[list[list[str]]] = None,
         X_test: Optional[np.ndarray] = None,
         metric: str = "silhouette_score",
         tags: Optional[dict] = None
     ) -> dict:
         """
-        Train with hyperparameter grid search.
-        
+        Train with hyperparameter grid search, optionally over feature subsets.
+
         Args:
             model_type: 'kmeans' or 'gmm'
-            X_train: Training data
-            feature_names: Names of features
+            X_train: Training data (columns match feature_names order)
+            feature_names: Names of all features in X_train
             param_grid: Parameter grid for search
+            feature_subsets: Optional list of feature name lists to search over.
+                            Each subset must be a subset of feature_names.
+                            If None, uses all features as a single subset.
             X_test: Optional test data
             metric: Metric to optimize
             tags: Additional MLflow tags
-            
+
         Returns:
-            Dictionary with best model, run ID, and all results
+            Dictionary with best model, run ID, feature subset, and all results
         """
+        subsets_to_try = feature_subsets if feature_subsets else [feature_names]
+        n_param_combos = len(list(ParameterGrid(param_grid)))
+
         logger.info(
-            "Hyperparameter search: model=%s, combinations=%d",
-            model_type,
-            len(list(ParameterGrid(param_grid)))
+            "Hyperparameter search: model=%s, param_combos=%d, feature_subsets=%d, total=%d",
+            model_type, n_param_combos, len(subsets_to_try),
+            n_param_combos * len(subsets_to_try)
         )
-        
+
         results = []
-        
+
         # For BIC, lower is better; for others, higher is better
         best_score = np.inf if metric == 'bic' else -np.inf
         best_model = None
         best_run_id = None
-        
-        for params in ParameterGrid(param_grid):
-            model, run_id = self.train(
-                model_type=model_type,
-                X_train=X_train,
-                feature_names=feature_names,
-                params=params,
-                X_test=X_test,
-                tags=tags
-            )
-            
-            model_params = model.get_model_params()
-            score = model_params.get(metric)
-            
-            if score is not None:
-                results.append({
-                    'params': params.copy(),
-                    'run_id': run_id,
-                    metric: score,
-                    'threshold': model.threshold
-                })
-                
-                is_better = (
-                    (metric == 'bic' and score < best_score) or
-                    (metric != 'bic' and score > best_score)
+        best_features = None
+
+        for subset in subsets_to_try:
+            # Select columns for this feature subset
+            col_indices = [feature_names.index(f) for f in subset]
+            X_train_sub = X_train[:, col_indices]
+            X_test_sub = X_test[:, col_indices] if X_test is not None else None
+
+            subset_tags = {**(tags or {}), 'feature_subset': ','.join(subset)}
+
+            for params in ParameterGrid(param_grid):
+                model, run_id = self.train(
+                    model_type=model_type,
+                    X_train=X_train_sub,
+                    feature_names=subset,
+                    params=params,
+                    X_test=X_test_sub,
+                    tags=subset_tags
                 )
-                
-                if is_better:
-                    best_score = score
-                    best_model = model
-                    best_run_id = run_id
-        
+
+                model_params = model.get_model_params()
+                score = model_params.get(metric)
+
+                if score is not None:
+                    results.append({
+                        'params': params.copy(),
+                        'features': list(subset),
+                        'n_features': len(subset),
+                        'run_id': run_id,
+                        metric: score,
+                        'threshold': model.threshold
+                    })
+
+                    is_better = (
+                        (metric == 'bic' and score < best_score) or
+                        (metric != 'bic' and score > best_score)
+                    )
+
+                    if is_better:
+                        best_score = score
+                        best_model = model
+                        best_run_id = run_id
+                        best_features = list(subset)
+
         logger.info(
-            "Search complete: best_%s=%.4f",
-            metric, best_score if best_score != np.inf else 0
+            "Search complete: best_%s=%.4f, best_features=%s",
+            metric, best_score if best_score != np.inf else 0,
+            best_features
         )
-        
+
         return {
             'best_model': best_model,
             'best_run_id': best_run_id,
             'best_score': best_score if best_score != np.inf else None,
+            'best_features': best_features,
             'all_results': results
         }
     
