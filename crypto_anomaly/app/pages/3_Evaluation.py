@@ -31,7 +31,16 @@ def get_available_symbols() -> list[str]:
 
 
 def load_model_from_mlflow(run_id: str):
-    """Load a model from MLflow by run ID."""
+    """Load a model by run ID — tries local file first, then MLflow artifacts."""
+    from config.settings import settings
+    from src.models.base import BaseAnomalyDetector
+
+    # Try local model file first
+    local_path = settings.data_dir / "models" / f"{run_id}.joblib"
+    if local_path.exists():
+        return BaseAnomalyDetector.load(local_path)
+
+    # Fall back to MLflow artifact store
     import mlflow.sklearn
     return mlflow.sklearn.load_model(f"runs:/{run_id}/model")
 
@@ -304,9 +313,9 @@ with tab2:
 
 
 with tab3:
-    st.subheader("Anomaly Analysis")
-    
-    st.markdown("Analyze detected anomalies from prediction history.")
+    st.subheader("Anomaly Analysis (Live Detection History)")
+
+    st.markdown("Browse anomalies detected during live or historical replay sessions from the **Live Detection** page.")
     
     try:
         from src.data.database import db

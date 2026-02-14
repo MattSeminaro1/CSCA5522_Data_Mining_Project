@@ -141,13 +141,25 @@ class ModelTrainer:
             except Exception as e:
                 logger.warning("MLflow logging failed: %s", e)
         
+        # Always save model locally as fallback
+        try:
+            from config.settings import settings
+            model_dir = settings.data_dir / "models"
+            model_dir.mkdir(parents=True, exist_ok=True)
+            local_id = run_id or datetime.now().strftime("%Y%m%d_%H%M%S")
+            local_path = model_dir / f"{local_id}.joblib"
+            model.save(local_path)
+            logger.info("Model saved locally: %s", local_path)
+        except Exception as e:
+            logger.warning("Local model save failed: %s", e)
+
         logger.info(
             "Model trained: type=%s, silhouette=%.4f, threshold=%.4f",
             model_type,
             model_params.get('silhouette_score') or 0,
             model.threshold or 0
         )
-        
+
         return model, run_id
     
     def _log_to_mlflow(

@@ -111,6 +111,9 @@ services:
       MINIO_ENDPOINT: minio:9000
       MINIO_ACCESS_KEY: minioadmin
       MINIO_SECRET_KEY: minioadmin123
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin123
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
       PYTHONPATH: /app
       ENVIRONMENT: development
     ports:
