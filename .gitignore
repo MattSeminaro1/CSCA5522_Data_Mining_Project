@@ -31,3 +31,6 @@ Thumbs.db
 # Data
 *.parquet
 crypto_anomaly/data/
+
+# Docs
+docs/

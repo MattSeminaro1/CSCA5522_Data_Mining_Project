@@ -330,7 +330,84 @@ with tab1:
                 )
                 
                 st.plotly_chart(fig, use_container_width=True)
-                
+
+                # Feature Analysis
+                st.markdown("#### Feature Analysis")
+
+                train_preds_fa = model.predict(X_train)
+                anomaly_mask = train_preds_fa == 1
+
+                if anomaly_mask.any() and (~anomaly_mask).any():
+                    # Scale data for fair cross-feature comparison
+                    if model.scaler is not None:
+                        X_scaled = model.scaler.transform(X_train)
+                    else:
+                        X_scaled = X_train
+
+                    # Method A: Anomaly vs normal difference
+                    normal_mean = np.abs(X_scaled[~anomaly_mask]).mean(axis=0)
+                    anomaly_mean = np.abs(X_scaled[anomaly_mask]).mean(axis=0)
+                    importance = np.abs(anomaly_mean - normal_mean)
+                    if importance.max() > 0:
+                        importance = importance / importance.max()
+
+                    # Method B: Cluster center spread (in scaled space)
+                    if hasattr(model, 'get_cluster_centers'):
+                        centers_scaled = model.model.cluster_centers_
+                    else:
+                        centers_scaled = model.model.means_
+                    center_spread = np.std(centers_scaled, axis=0)
+                    if center_spread.max() > 0:
+                        center_spread_norm = center_spread / center_spread.max()
+                    else:
+                        center_spread_norm = center_spread
+
+                    fa_col1, fa_col2 = st.columns(2)
+
+                    with fa_col1:
+                        importance_df = pd.DataFrame({
+                            'Feature': selected_features,
+                            'Anomaly Contribution': importance,
+                            'Cluster Spread': center_spread_norm
+                        }).sort_values('Anomaly Contribution', ascending=True)
+
+                        fig_imp = px.bar(
+                            importance_df,
+                            y='Feature',
+                            x='Anomaly Contribution',
+                            orientation='h',
+                            title='Feature Importance (Anomaly Contribution)',
+                            color='Anomaly Contribution',
+                            color_continuous_scale='Reds'
+                        )
+                        fig_imp.update_layout(yaxis={'categoryorder': 'total ascending'})
+                        st.plotly_chart(fig_imp, use_container_width=True)
+
+                    with fa_col2:
+                        if hasattr(model, 'get_cluster_centers'):
+                            centers = model.get_cluster_centers()
+                            center_label = "Cluster"
+                        else:
+                            centers = model.get_component_means()
+                            center_label = "Component"
+
+                        centers_df = pd.DataFrame(
+                            centers,
+                            columns=selected_features,
+                            index=[f"{center_label} {i}" for i in range(len(centers))]
+                        )
+
+                        fig_heat = px.imshow(
+                            centers_df,
+                            title=f'{center_label} Centers by Feature',
+                            labels=dict(x="Feature", y=center_label, color="Value"),
+                            aspect="auto",
+                            color_continuous_scale='RdBu_r'
+                        )
+                        st.plotly_chart(fig_heat, use_container_width=True)
+                else:
+                    st.info("Feature analysis requires both normal and anomalous samples.")
+
                 if run_id:
                     st.info(f"MLflow Run ID: `{run_id}`")
                 
@@ -371,37 +448,77 @@ with tab2:
         )
 
     with auto_col2:
+        from src.features.registry import feature_registry as _auto_fr
+        _auto_all_features = _auto_fr.list_features()
+        _auto_default = ["volatility", "log_return", "volume_ratio", "return_std", "price_range", "volatility_ratio"]
+        _auto_default = [f for f in _auto_default if f in _auto_all_features]
+
+        auto_features = st.multiselect(
+            "Features",
+            options=_auto_all_features,
+            default=_auto_default,
+            key="auto_features"
+        )
+
         auto_days = st.slider("Training Days", min_value=30, max_value=365, value=180, key="auto_days")
         auto_test_split = st.slider("Test Split", min_value=0.1, max_value=0.4, value=0.2, key="auto_test_split")
 
-    can_auto = len(auto_symbols) > 0
+    can_auto = len(auto_symbols) > 0 and len(auto_features) > 0
 
     if auto_model_type == "kmeans":
         auto_grid = {
             'n_clusters': [3, 4, 5, 6, 7, 8, 10],
-            'contamination': [0.03, 0.05, 0.10],
-            'init': ['k-means++', 'random'],
-            'algorithm': ['lloyd', 'elkan'],
         }
         auto_metric = "silhouette_score"
-        n_auto = 3 * 7 * 2 * 2  # 84 combinations
+        n_auto = 7
     else:
         auto_grid = {
             'n_components': [3, 4, 5, 6, 7, 8, 10],
-            'contamination': [0.03, 0.05, 0.10],
             'covariance_type': ['full', 'tied', 'diag'],
-            'init_params': ['kmeans', 'k-means++'],
-            'reg_covar': [1e-6, 1e-4],
         }
         auto_metric = "silhouette_score"
-        n_auto = 7 * 3 * 3 * 2 * 2  # 252 combinations
+        n_auto = 7 * 3  # 21 combinations
 
-    auto_features = ["volatility", "log_return", "volume_ratio", "return_std", "price_range", "volatility_ratio"]
     auto_cluster_label = "n_clusters" if auto_model_type == "kmeans" else "n_components"
+
+    # Feature subset search
+    auto_search_features = st.checkbox(
+        "Search over feature combinations",
+        value=True,
+        key="auto_search_features",
+        help="Try different subsets of the selected features to find the best combination"
+    )
+
+    auto_feature_subsets = None
+    n_feature_combos = 1
+    if auto_search_features and len(auto_features) >= 3:
+        auto_min_subset = st.slider(
+            "Minimum subset size",
+            min_value=2,
+            max_value=max(2, len(auto_features) - 1),
+            value=min(3, max(2, len(auto_features) - 1)),
+            key="auto_min_subset"
+        )
+
+        from itertools import combinations as _combinations
+        auto_feature_subsets = []
+        for size in range(auto_min_subset, len(auto_features) + 1):
+            auto_feature_subsets.extend([list(c) for c in _combinations(auto_features, size)])
+
+        n_feature_combos = len(auto_feature_subsets)
+        total_auto = n_auto * n_feature_combos
+
+        st.caption(f"{n_feature_combos} feature subsets x {n_auto} param combos = **{total_auto}** total evaluations")
+
+        if total_auto > 500:
+            st.warning(f"Large search space ({total_auto} total). Consider increasing minimum subset size.")
+    elif auto_search_features:
+        st.info("Select at least 3 features to enable feature combination search.")
 
     with st.expander("Preview auto-tune grid", expanded=False):
         st.json({k: str(v) for k, v in auto_grid.items()})
-        st.caption(f"{n_auto} combinations will be evaluated, optimizing **{auto_metric}**.")
+        total_display = n_auto * n_feature_combos
+        st.caption(f"{total_display} total combinations will be evaluated, optimizing **{auto_metric}**.")
 
     if st.button("Find Best Parameters", type="primary", disabled=not can_auto, key="auto_tune"):
         with st.spinner("Loading and preparing data..."):
@@ -425,7 +542,7 @@ with tab2:
                 st.error(f"Data preparation failed: {e}")
                 st.stop()
 
-        with st.spinner(f"Auto-tuning ({n_auto} combinations)... this may take a few minutes."):
+        with st.spinner(f"Auto-tuning ({n_auto * n_feature_combos} combinations)... this may take a few minutes."):
             try:
                 from config.settings import settings
                 trainer = ModelTrainer(
@@ -438,6 +555,7 @@ with tab2:
                     X_train=X_train,
                     feature_names=auto_features,
                     param_grid=auto_grid,
+                    feature_subsets=auto_feature_subsets,
                     X_test=X_test,
                     metric=auto_metric,
                     tags={
@@ -475,6 +593,11 @@ with tab2:
                 param_str = ",\n    ".join(f'"{k}": {repr(v)}' for k, v in best_params.items())
                 st.code(f"{{\n    {param_str}\n}}", language="python")
 
+                # Show best features if feature subset search was used
+                best_features = tuning_results.get('best_features')
+                if best_features and auto_feature_subsets:
+                    st.markdown(f"**Best Features** ({len(best_features)}): `{', '.join(best_features)}`")
+
                 # ── Performance Summary ──
                 st.markdown("#### Best Model Performance")
                 model_params = best_model.get_model_params()
@@ -502,6 +625,9 @@ with tab2:
                         row = {**r['params']}
                         row[auto_metric] = r.get(auto_metric)
                         row['threshold'] = r.get('threshold')
+                        if 'features' in r:
+                            row['n_features'] = r.get('n_features')
+                            row['features'] = ', '.join(r.get('features', []))
                         row['run_id'] = r.get('run_id', '')[:8] if r.get('run_id') else ''
                         results_rows.append(row)
 
@@ -726,18 +852,50 @@ with tab2:
                 if tune_scale_options:
                     param_grid['scale_features'] = tune_scale_options
 
+        # Feature subset search
+        tune_search_features = st.checkbox(
+            "Search over feature subsets",
+            value=False,
+            key="tune_search_features",
+            help="Try different subsets of the selected features to find the best combination"
+        )
+
+        tune_feature_subsets = None
+        n_tune_feature_combos = 1
+        if tune_search_features and len(tune_features) >= 3:
+            tune_min_subset = st.slider(
+                "Minimum subset size",
+                min_value=2,
+                max_value=max(2, len(tune_features) - 1),
+                value=max(2, len(tune_features) - 2),
+                key="tune_min_subset"
+            )
+
+            from itertools import combinations as _combinations_tune
+            tune_feature_subsets = []
+            for size in range(tune_min_subset, len(tune_features) + 1):
+                tune_feature_subsets.extend([list(c) for c in _combinations_tune(tune_features, size)])
+
+            n_tune_feature_combos = len(tune_feature_subsets)
+        elif tune_search_features:
+            st.info("Select at least 3 features to enable feature subset search.")
+
         from sklearn.model_selection import ParameterGrid
         n_combinations = len(list(ParameterGrid(param_grid))) if param_grid else 0
+        n_total_combinations = n_combinations * n_tune_feature_combos
 
-        st.info(f"**{n_combinations}** parameter combinations will be evaluated.")
+        if n_tune_feature_combos > 1:
+            st.info(f"**{n_combinations}** param combos x **{n_tune_feature_combos}** feature subsets = **{n_total_combinations}** total evaluations.")
+        else:
+            st.info(f"**{n_combinations}** parameter combinations will be evaluated.")
 
         with st.expander("Preview Parameter Grid", expanded=False):
             st.json({k: str(v) for k, v in param_grid.items()})
 
         can_tune = len(tune_symbols) > 0 and len(tune_features) > 0 and n_combinations > 0
 
-        if n_combinations > 100:
-            st.warning(f"Large grid ({n_combinations} combinations). This may take a long time.")
+        if n_total_combinations > 100:
+            st.warning(f"Large search space ({n_total_combinations} total combinations). This may take a long time.")
 
         if st.button("Run Grid Search", type="primary", disabled=not can_tune, key="run_grid_search"):
             with st.spinner("Loading and preparing data..."):
@@ -761,7 +919,7 @@ with tab2:
                     st.error(f"Data preparation failed: {e}")
                     st.stop()
 
-            with st.spinner(f"Running grid search ({n_combinations} combinations)..."):
+            with st.spinner(f"Running grid search ({n_total_combinations} combinations)..."):
                 try:
                     from config.settings import settings
                     trainer = ModelTrainer(
@@ -774,6 +932,7 @@ with tab2:
                         X_train=X_train,
                         feature_names=tune_features,
                         param_grid=param_grid,
+                        feature_subsets=tune_feature_subsets,
                         X_test=X_test,
                         metric=tune_metric,
                         tags={
@@ -801,12 +960,20 @@ with tab2:
                     if best_result:
                         st.json(best_result['params'])
 
+                    # Show best features if feature subset search was used
+                    best_features = tuning_results.get('best_features')
+                    if best_features and tune_feature_subsets:
+                        st.markdown(f"**Best Features** ({len(best_features)}): `{', '.join(best_features)}`")
+
                     st.markdown("##### All Results")
                     results_rows = []
                     for r in all_results:
                         row = {**r['params']}
                         row[tune_metric] = r.get(tune_metric)
                         row['threshold'] = r.get('threshold')
+                        if 'features' in r:
+                            row['n_features'] = r.get('n_features')
+                            row['features'] = ', '.join(r.get('features', []))
                         row['run_id'] = r.get('run_id', '')[:8] if r.get('run_id') else ''
                         results_rows.append(row)
 
