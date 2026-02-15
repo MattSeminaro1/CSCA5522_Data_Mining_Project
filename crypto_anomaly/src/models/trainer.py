@@ -233,7 +233,8 @@ class ModelTrainer:
         feature_subsets: Optional[list[list[str]]] = None,
         X_test: Optional[np.ndarray] = None,
         metric: str = "silhouette_score",
-        tags: Optional[dict] = None
+        tags: Optional[dict] = None,
+        on_progress: Optional[callable] = None
     ) -> dict:
         """
         Train with hyperparameter grid search, optionally over feature subsets.
@@ -249,6 +250,8 @@ class ModelTrainer:
             X_test: Optional test data
             metric: Metric to optimize
             tags: Additional MLflow tags
+            on_progress: Optional callback called after each combination with
+                         (current, total, result_dict)
 
         Returns:
             Dictionary with best model, run ID, feature subset, and all results
@@ -269,6 +272,9 @@ class ModelTrainer:
         best_model = None
         best_run_id = None
         best_features = None
+
+        total = n_param_combos * len(subsets_to_try)
+        current = 0
 
         for subset in subsets_to_try:
             # Select columns for this feature subset
@@ -291,15 +297,19 @@ class ModelTrainer:
                 model_params = model.get_model_params()
                 score = model_params.get(metric)
 
+                current += 1
+                result_entry = None
+
                 if score is not None:
-                    results.append({
+                    result_entry = {
                         'params': params.copy(),
                         'features': list(subset),
                         'n_features': len(subset),
                         'run_id': run_id,
                         metric: score,
                         'threshold': model.threshold
-                    })
+                    }
+                    results.append(result_entry)
 
                     is_better = (
                         (metric == 'bic' and score < best_score) or
@@ -311,6 +321,9 @@ class ModelTrainer:
                         best_model = model
                         best_run_id = run_id
                         best_features = list(subset)
+
+                if on_progress:
+                    on_progress(current, total, result_entry)
 
         logger.info(
             "Search complete: best_%s=%.4f, best_features=%s",

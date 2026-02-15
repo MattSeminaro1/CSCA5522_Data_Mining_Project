@@ -17,23 +17,21 @@ st.title("Model Training")
 st.markdown("Train anomaly detection models with hyperparameter tuning.")
 
 
-def load_training_data(symbols: list[str], days: int) -> pd.DataFrame:
+def load_training_data(symbols: list[str], start_date: datetime, end_date: datetime) -> pd.DataFrame:
     """Load and prepare training data from database."""
     from src.data.database import db
-    
+
     all_data = []
-    end_time = datetime.utcnow()
-    start_time = end_time - timedelta(days=days)
-    
+
     for symbol in symbols:
-        df = db.get_ohlcv(symbol, start_time, end_time)
+        df = db.get_ohlcv(symbol, start_date, end_date)
         if not df.empty:
             df['symbol'] = symbol
             all_data.append(df)
-    
+
     if not all_data:
         return pd.DataFrame()
-    
+
     return pd.concat(all_data, ignore_index=True)
 
 
@@ -180,13 +178,19 @@ with tab1:
             default=default_features
         )
         
-        training_days = st.slider(
-            "Training Days",
-            min_value=30,
-            max_value=365,
-            value=180,
-            help="Number of days of data to use for training"
-        )
+        date_col1, date_col2 = st.columns(2)
+        with date_col1:
+            train_start_date = st.date_input(
+                "Start Date",
+                value=datetime.utcnow().date() - timedelta(days=180),
+                key="train_start_date",
+            )
+        with date_col2:
+            train_end_date = st.date_input(
+                "End Date",
+                value=datetime.utcnow().date(),
+                key="train_end_date",
+            )
         
         test_split = st.slider(
             "Test Split",
@@ -207,7 +211,11 @@ with tab1:
                 from src.features.registry import compute_features, get_feature_matrix
                 from src.models.trainer import ModelTrainer
                 
-                combined = load_training_data(selected_symbols, training_days)
+                combined = load_training_data(
+                    selected_symbols,
+                    datetime.combine(train_start_date, datetime.min.time()),
+                    datetime.combine(train_end_date, datetime.max.time()),
+                )
                 
                 if combined.empty:
                     st.error("No data loaded. Check that selected symbols have data.")
@@ -460,7 +468,19 @@ with tab2:
             key="auto_features"
         )
 
-        auto_days = st.slider("Training Days", min_value=30, max_value=365, value=180, key="auto_days")
+        auto_date_col1, auto_date_col2 = st.columns(2)
+        with auto_date_col1:
+            auto_start_date = st.date_input(
+                "Start Date",
+                value=datetime.utcnow().date() - timedelta(days=180),
+                key="auto_start_date",
+            )
+        with auto_date_col2:
+            auto_end_date = st.date_input(
+                "End Date",
+                value=datetime.utcnow().date(),
+                key="auto_end_date",
+            )
         auto_test_split = st.slider("Test Split", min_value=0.1, max_value=0.4, value=0.2, key="auto_test_split")
 
     can_auto = len(auto_symbols) > 0 and len(auto_features) > 0
@@ -526,7 +546,11 @@ with tab2:
                 from src.features.registry import compute_features, get_feature_matrix
                 from src.models.trainer import ModelTrainer
 
-                combined = load_training_data(auto_symbols, auto_days)
+                combined = load_training_data(
+                    auto_symbols,
+                    datetime.combine(auto_start_date, datetime.min.time()),
+                    datetime.combine(auto_end_date, datetime.max.time()),
+                )
                 if combined.empty:
                     st.error("No data loaded. Check that selected symbols have data.")
                     st.stop()
@@ -542,140 +566,159 @@ with tab2:
                 st.error(f"Data preparation failed: {e}")
                 st.stop()
 
-        with st.spinner(f"Auto-tuning ({n_auto * n_feature_combos} combinations)... this may take a few minutes."):
-            try:
-                from config.settings import settings
-                trainer = ModelTrainer(
-                    mlflow_tracking_uri=settings.mlflow_tracking_uri,
-                    use_mlflow=True
-                )
+        auto_total = n_auto * n_feature_combos
+        auto_progress_bar = st.progress(0, text=f"0/{auto_total} combinations completed")
 
-                tuning_results = trainer.train_with_tuning(
-                    model_type=auto_model_type,
-                    X_train=X_train,
-                    feature_names=auto_features,
-                    param_grid=auto_grid,
-                    feature_subsets=auto_feature_subsets,
-                    X_test=X_test,
-                    metric=auto_metric,
-                    tags={
-                        'symbols': ','.join(auto_symbols),
-                        'source': 'streamlit_auto_tune'
-                    }
-                )
+        try:
+            from config.settings import settings
+            trainer = ModelTrainer(
+                mlflow_tracking_uri=settings.mlflow_tracking_uri,
+                use_mlflow=True
+            )
 
-                best_model = tuning_results['best_model']
-                best_score = tuning_results['best_score']
-                best_run_id = tuning_results['best_run_id']
-                all_results = tuning_results['all_results']
+            def _auto_progress(current, total, result):
+                pct = current / total
+                score_text = ""
+                if result and auto_metric in result:
+                    score_text = f" — latest {auto_metric}: {result[auto_metric]:.4f}"
+                auto_progress_bar.progress(pct, text=f"{current}/{total} combinations completed{score_text}")
 
-                if best_model is None:
-                    st.warning("Auto-tune completed but no valid results were found.")
-                    st.stop()
+            tuning_results = trainer.train_with_tuning(
+                model_type=auto_model_type,
+                X_train=X_train,
+                feature_names=auto_features,
+                param_grid=auto_grid,
+                feature_subsets=auto_feature_subsets,
+                X_test=X_test,
+                metric=auto_metric,
+                tags={
+                    'symbols': ','.join(auto_symbols),
+                    'source': 'streamlit_auto_tune'
+                },
+                on_progress=_auto_progress,
+            )
 
-                st.success(f"Auto-tune complete! Best silhouette score: **{best_score:.4f}**")
+            best_model = tuning_results['best_model']
+            best_score = tuning_results['best_score']
+            best_run_id = tuning_results['best_run_id']
+            all_results = tuning_results['all_results']
 
-                # ── Recommended Parameters ──
-                st.markdown("#### Recommended Parameters")
-                st.markdown("Use these values in the **Train Model** tab to train your final model.")
+            if best_model is None:
+                st.warning("Auto-tune completed but no valid results were found.")
+                st.stop()
 
-                best_result = next((r for r in all_results if r['run_id'] == best_run_id), None)
-                best_params = best_result['params'] if best_result else best_model.get_model_params()
+            st.success(f"Auto-tune complete! Best silhouette score: **{best_score:.4f}**")
 
-                # Display as clean key-value metrics
-                param_cols = st.columns(min(len(best_params), 4))
-                for i, (key, value) in enumerate(best_params.items()):
-                    with param_cols[i % len(param_cols)]:
-                        display_val = f"{value:.0e}" if isinstance(value, float) and value < 0.001 else str(value)
-                        st.metric(key, display_val)
+            # ── Recommended Parameters ──
+            st.markdown("#### Recommended Parameters")
+            st.markdown("Use these values in the **Train Model** tab to train your final model.")
 
-                # Copyable code block
-                param_str = ",\n    ".join(f'"{k}": {repr(v)}' for k, v in best_params.items())
-                st.code(f"{{\n    {param_str}\n}}", language="python")
+            best_result = next((r for r in all_results if r['run_id'] == best_run_id), None)
+            best_params = best_result['params'] if best_result else best_model.get_model_params()
 
-                # Show best features if feature subset search was used
-                best_features = tuning_results.get('best_features')
-                if best_features and auto_feature_subsets:
-                    st.markdown(f"**Best Features** ({len(best_features)}): `{', '.join(best_features)}`")
+            # Display as clean key-value metrics
+            param_cols = st.columns(min(len(best_params), 4))
+            for i, (key, value) in enumerate(best_params.items()):
+                with param_cols[i % len(param_cols)]:
+                    display_val = f"{value:.0e}" if isinstance(value, float) and value < 0.001 else str(value)
+                    st.metric(key, display_val)
 
-                # ── Performance Summary ──
-                st.markdown("#### Best Model Performance")
-                model_params = best_model.get_model_params()
-                perf_col1, perf_col2, perf_col3, perf_col4 = st.columns(4)
+            # Copyable code block
+            param_str = ",\n    ".join(f'"{k}": {repr(v)}' for k, v in best_params.items())
+            st.code(f"{{\n    {param_str}\n}}", language="python")
 
-                with perf_col1:
-                    sil = model_params.get('silhouette_score')
-                    st.metric("Silhouette Score", f"{sil:.4f}" if sil else "N/A")
-                with perf_col2:
-                    st.metric("Threshold", f"{best_model.threshold:.4f}")
-                with perf_col3:
-                    train_preds = best_model.predict(X_train)
-                    st.metric("Train Anomaly Rate", f"{train_preds.mean():.2%}")
-                with perf_col4:
-                    test_preds = best_model.predict(X_test)
-                    st.metric("Test Anomaly Rate", f"{test_preds.mean():.2%}")
+            # Show best features if feature subset search was used
+            best_features = tuning_results.get('best_features')
+            if best_features and auto_feature_subsets:
+                st.markdown(f"**Best Features** ({len(best_features)}): `{', '.join(best_features)}`")
 
-                if best_run_id:
-                    st.info(f"Best MLflow Run ID: `{best_run_id}`")
+            # ── Performance Summary ──
+            st.markdown("#### Best Model Performance")
+            model_params = best_model.get_model_params()
+            perf_col1, perf_col2, perf_col3, perf_col4 = st.columns(4)
 
-                # ── Visualization ──
-                with st.expander("Detailed Results", expanded=False):
-                    results_rows = []
-                    for r in all_results:
-                        row = {**r['params']}
-                        row[auto_metric] = r.get(auto_metric)
-                        row['threshold'] = r.get('threshold')
-                        if 'features' in r:
-                            row['n_features'] = r.get('n_features')
-                            row['features'] = ', '.join(r.get('features', []))
-                        row['run_id'] = r.get('run_id', '')[:8] if r.get('run_id') else ''
-                        results_rows.append(row)
+            # Slice to best feature subset if needed
+            if best_features and best_features != auto_features:
+                best_col_idx = [auto_features.index(f) for f in best_features]
+                X_train_best = X_train[:, best_col_idx]
+                X_test_best = X_test[:, best_col_idx]
+            else:
+                X_train_best = X_train
+                X_test_best = X_test
 
-                    results_df = pd.DataFrame(results_rows)
-                    if auto_metric in results_df.columns:
-                        results_df = results_df.sort_values(auto_metric, ascending=False)
+            with perf_col1:
+                sil = model_params.get('silhouette_score')
+                st.metric("Silhouette Score", f"{sil:.4f}" if sil else "N/A")
+            with perf_col2:
+                st.metric("Threshold", f"{best_model.threshold:.4f}")
+            with perf_col3:
+                train_preds = best_model.predict(X_train_best)
+                st.metric("Train Anomaly Rate", f"{train_preds.mean():.2%}")
+            with perf_col4:
+                test_preds = best_model.predict(X_test_best)
+                st.metric("Test Anomaly Rate", f"{test_preds.mean():.2%}")
 
-                    st.markdown("##### All Results")
-                    st.dataframe(results_df, use_container_width=True)
+            if best_run_id:
+                st.info(f"Best MLflow Run ID: `{best_run_id}`")
 
-                    st.markdown("##### Results Visualization")
-                    if auto_metric in results_df.columns and auto_cluster_label in results_df.columns:
-                        viz_col1, viz_col2 = st.columns(2)
+            # ── Visualization ──
+            with st.expander("Detailed Results", expanded=False):
+                results_rows = []
+                for r in all_results:
+                    row = {**r['params']}
+                    row[auto_metric] = r.get(auto_metric)
+                    row['threshold'] = r.get('threshold')
+                    if 'features' in r:
+                        row['n_features'] = r.get('n_features')
+                        row['features'] = ', '.join(r.get('features', []))
+                    row['run_id'] = r.get('run_id', '')[:8] if r.get('run_id') else ''
+                    results_rows.append(row)
 
-                        with viz_col1:
-                            fig = px.scatter(
-                                results_df,
-                                x=auto_cluster_label,
-                                y=auto_metric,
-                                color='contamination' if 'contamination' in results_df.columns else None,
-                                title=f"{auto_metric} vs {auto_cluster_label}",
-                                hover_data=results_df.columns.tolist()
-                            )
-                            if best_result:
-                                fig.add_trace(go.Scatter(
-                                    x=[best_result['params'].get(auto_cluster_label)],
-                                    y=[best_result.get(auto_metric)],
-                                    mode='markers',
-                                    marker=dict(size=15, symbol='star', color='red', line=dict(width=2, color='black')),
-                                    name='Best',
-                                    showlegend=True
-                                ))
-                            st.plotly_chart(fig, use_container_width=True)
+                results_df = pd.DataFrame(results_rows)
+                if auto_metric in results_df.columns:
+                    results_df = results_df.sort_values(auto_metric, ascending=False)
 
-                        with viz_col2:
-                            fig = px.box(
-                                results_df,
-                                x=auto_cluster_label,
-                                y=auto_metric,
-                                title=f"{auto_metric} Distribution by {auto_cluster_label}"
-                            )
-                            st.plotly_chart(fig, use_container_width=True)
+                st.markdown("##### All Results")
+                st.dataframe(results_df, use_container_width=True)
 
-            except Exception as e:
-                st.error(f"Auto-tune failed: {e}")
-                import traceback
-                with st.expander("Error Details"):
-                    st.code(traceback.format_exc())
+                st.markdown("##### Results Visualization")
+                if auto_metric in results_df.columns and auto_cluster_label in results_df.columns:
+                    viz_col1, viz_col2 = st.columns(2)
+
+                    with viz_col1:
+                        fig = px.scatter(
+                            results_df,
+                            x=auto_cluster_label,
+                            y=auto_metric,
+                            color='contamination' if 'contamination' in results_df.columns else None,
+                            title=f"{auto_metric} vs {auto_cluster_label}",
+                            hover_data=results_df.columns.tolist()
+                        )
+                        if best_result:
+                            fig.add_trace(go.Scatter(
+                                x=[best_result['params'].get(auto_cluster_label)],
+                                y=[best_result.get(auto_metric)],
+                                mode='markers',
+                                marker=dict(size=15, symbol='star', color='red', line=dict(width=2, color='black')),
+                                name='Best',
+                                showlegend=True
+                            ))
+                        st.plotly_chart(fig, use_container_width=True)
+
+                    with viz_col2:
+                        fig = px.box(
+                            results_df,
+                            x=auto_cluster_label,
+                            y=auto_metric,
+                            title=f"{auto_metric} Distribution by {auto_cluster_label}"
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
+
+        except Exception as e:
+            st.error(f"Auto-tune failed: {e}")
+            import traceback
+            with st.expander("Error Details"):
+                st.code(traceback.format_exc())
 
     st.markdown("---")
 
@@ -733,7 +776,19 @@ with tab2:
                 key="tune_features"
             )
 
-            tune_days = st.slider("Training Days", min_value=30, max_value=365, value=180, key="tune_days")
+            tune_date_col1, tune_date_col2 = st.columns(2)
+            with tune_date_col1:
+                tune_start_date = st.date_input(
+                    "Start Date",
+                    value=datetime.utcnow().date() - timedelta(days=180),
+                    key="tune_start_date",
+                )
+            with tune_date_col2:
+                tune_end_date = st.date_input(
+                    "End Date",
+                    value=datetime.utcnow().date(),
+                    key="tune_end_date",
+                )
             tune_test_split = st.slider("Test Split", min_value=0.1, max_value=0.4, value=0.2, key="tune_test_split")
 
         st.markdown("##### Parameter Grid")
@@ -903,7 +958,11 @@ with tab2:
                     from src.features.registry import compute_features, get_feature_matrix
                     from src.models.trainer import ModelTrainer
 
-                    combined = load_training_data(tune_symbols, tune_days)
+                    combined = load_training_data(
+                        tune_symbols,
+                        datetime.combine(tune_start_date, datetime.min.time()),
+                        datetime.combine(tune_end_date, datetime.max.time()),
+                    )
                     if combined.empty:
                         st.error("No data loaded. Check that selected symbols have data.")
                         st.stop()
@@ -919,123 +978,142 @@ with tab2:
                     st.error(f"Data preparation failed: {e}")
                     st.stop()
 
-            with st.spinner(f"Running grid search ({n_total_combinations} combinations)..."):
-                try:
-                    from config.settings import settings
-                    trainer = ModelTrainer(
-                        mlflow_tracking_uri=settings.mlflow_tracking_uri,
-                        use_mlflow=True
-                    )
+            tune_progress_bar = st.progress(0, text=f"0/{n_total_combinations} combinations completed")
 
-                    tuning_results = trainer.train_with_tuning(
-                        model_type=tune_model_type,
-                        X_train=X_train,
-                        feature_names=tune_features,
-                        param_grid=param_grid,
-                        feature_subsets=tune_feature_subsets,
-                        X_test=X_test,
-                        metric=tune_metric,
-                        tags={
-                            'symbols': ','.join(tune_symbols),
-                            'source': 'streamlit_grid_search'
-                        }
-                    )
+            try:
+                from config.settings import settings
+                trainer = ModelTrainer(
+                    mlflow_tracking_uri=settings.mlflow_tracking_uri,
+                    use_mlflow=True
+                )
 
-                    best_model = tuning_results['best_model']
-                    best_score = tuning_results['best_score']
-                    best_run_id = tuning_results['best_run_id']
-                    all_results = tuning_results['all_results']
+                def _tune_progress(current, total, result):
+                    pct = current / total
+                    score_text = ""
+                    if result and tune_metric in result:
+                        score_text = f" — latest {tune_metric}: {result[tune_metric]:.4f}"
+                    tune_progress_bar.progress(pct, text=f"{current}/{total} combinations completed{score_text}")
 
-                    if best_model is None:
-                        st.warning("Grid search completed but no valid results were found.")
-                        st.stop()
+                tuning_results = trainer.train_with_tuning(
+                    model_type=tune_model_type,
+                    X_train=X_train,
+                    feature_names=tune_features,
+                    param_grid=param_grid,
+                    feature_subsets=tune_feature_subsets,
+                    X_test=X_test,
+                    metric=tune_metric,
+                    tags={
+                        'symbols': ','.join(tune_symbols),
+                        'source': 'streamlit_grid_search'
+                    },
+                    on_progress=_tune_progress,
+                )
 
-                    st.success(f"Grid search complete! Best {tune_metric}: **{best_score:.4f}**")
+                best_model = tuning_results['best_model']
+                best_score = tuning_results['best_score']
+                best_run_id = tuning_results['best_run_id']
+                all_results = tuning_results['all_results']
 
-                    if best_run_id:
-                        st.info(f"Best MLflow Run ID: `{best_run_id}`")
+                if best_model is None:
+                    st.warning("Grid search completed but no valid results were found.")
+                    st.stop()
 
-                    st.markdown("##### Best Parameters")
-                    best_result = next((r for r in all_results if r['run_id'] == best_run_id), None)
-                    if best_result:
-                        st.json(best_result['params'])
+                st.success(f"Grid search complete! Best {tune_metric}: **{best_score:.4f}**")
 
-                    # Show best features if feature subset search was used
-                    best_features = tuning_results.get('best_features')
-                    if best_features and tune_feature_subsets:
-                        st.markdown(f"**Best Features** ({len(best_features)}): `{', '.join(best_features)}`")
+                if best_run_id:
+                    st.info(f"Best MLflow Run ID: `{best_run_id}`")
 
-                    st.markdown("##### All Results")
-                    results_rows = []
-                    for r in all_results:
-                        row = {**r['params']}
-                        row[tune_metric] = r.get(tune_metric)
-                        row['threshold'] = r.get('threshold')
-                        if 'features' in r:
-                            row['n_features'] = r.get('n_features')
-                            row['features'] = ', '.join(r.get('features', []))
-                        row['run_id'] = r.get('run_id', '')[:8] if r.get('run_id') else ''
-                        results_rows.append(row)
+                st.markdown("##### Best Parameters")
+                best_result = next((r for r in all_results if r['run_id'] == best_run_id), None)
+                if best_result:
+                    st.json(best_result['params'])
 
-                    results_df = pd.DataFrame(results_rows)
-                    if tune_metric in results_df.columns:
-                        results_df = results_df.sort_values(tune_metric, ascending=(tune_metric == 'bic'))
-                    st.dataframe(results_df, use_container_width=True)
+                # Show best features if feature subset search was used
+                best_features = tuning_results.get('best_features')
+                if best_features and tune_feature_subsets:
+                    st.markdown(f"**Best Features** ({len(best_features)}): `{', '.join(best_features)}`")
 
-                    st.markdown("##### Results Visualization")
-                    if tune_metric in results_df.columns and cluster_label in results_df.columns:
-                        viz_col1, viz_col2 = st.columns(2)
+                st.markdown("##### All Results")
+                results_rows = []
+                for r in all_results:
+                    row = {**r['params']}
+                    row[tune_metric] = r.get(tune_metric)
+                    row['threshold'] = r.get('threshold')
+                    if 'features' in r:
+                        row['n_features'] = r.get('n_features')
+                        row['features'] = ', '.join(r.get('features', []))
+                    row['run_id'] = r.get('run_id', '')[:8] if r.get('run_id') else ''
+                    results_rows.append(row)
 
-                        with viz_col1:
-                            fig = px.scatter(
-                                results_df,
-                                x=cluster_label,
-                                y=tune_metric,
-                                color='contamination' if 'contamination' in results_df.columns else None,
-                                title=f"{tune_metric} vs {cluster_label}",
-                                hover_data=results_df.columns.tolist()
-                            )
-                            if best_result:
-                                fig.add_trace(go.Scatter(
-                                    x=[best_result['params'].get(cluster_label)],
-                                    y=[best_result.get(tune_metric)],
-                                    mode='markers',
-                                    marker=dict(size=15, symbol='star', color='red', line=dict(width=2, color='black')),
-                                    name='Best',
-                                    showlegend=True
-                                ))
-                            st.plotly_chart(fig, use_container_width=True)
+                results_df = pd.DataFrame(results_rows)
+                if tune_metric in results_df.columns:
+                    results_df = results_df.sort_values(tune_metric, ascending=(tune_metric == 'bic'))
+                st.dataframe(results_df, use_container_width=True)
 
-                        with viz_col2:
-                            fig = px.box(
-                                results_df,
-                                x=cluster_label,
-                                y=tune_metric,
-                                title=f"{tune_metric} Distribution by {cluster_label}"
-                            )
-                            st.plotly_chart(fig, use_container_width=True)
+                st.markdown("##### Results Visualization")
+                if tune_metric in results_df.columns and cluster_label in results_df.columns:
+                    viz_col1, viz_col2 = st.columns(2)
 
-                    st.markdown("##### Best Model Performance")
-                    model_params = best_model.get_model_params()
-                    perf_col1, perf_col2, perf_col3, perf_col4 = st.columns(4)
+                    with viz_col1:
+                        fig = px.scatter(
+                            results_df,
+                            x=cluster_label,
+                            y=tune_metric,
+                            color='contamination' if 'contamination' in results_df.columns else None,
+                            title=f"{tune_metric} vs {cluster_label}",
+                            hover_data=results_df.columns.tolist()
+                        )
+                        if best_result:
+                            fig.add_trace(go.Scatter(
+                                x=[best_result['params'].get(cluster_label)],
+                                y=[best_result.get(tune_metric)],
+                                mode='markers',
+                                marker=dict(size=15, symbol='star', color='red', line=dict(width=2, color='black')),
+                                name='Best',
+                                showlegend=True
+                            ))
+                        st.plotly_chart(fig, use_container_width=True)
 
-                    with perf_col1:
-                        sil = model_params.get('silhouette_score')
-                        st.metric("Silhouette Score", f"{sil:.4f}" if sil else "N/A")
-                    with perf_col2:
-                        st.metric("Threshold", f"{best_model.threshold:.4f}")
-                    with perf_col3:
-                        train_preds = best_model.predict(X_train)
-                        st.metric("Train Anomaly Rate", f"{train_preds.mean():.2%}")
-                    with perf_col4:
-                        test_preds = best_model.predict(X_test)
-                        st.metric("Test Anomaly Rate", f"{test_preds.mean():.2%}")
+                    with viz_col2:
+                        fig = px.box(
+                            results_df,
+                            x=cluster_label,
+                            y=tune_metric,
+                            title=f"{tune_metric} Distribution by {cluster_label}"
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
 
-                except Exception as e:
-                    st.error(f"Grid search failed: {e}")
-                    import traceback
-                    with st.expander("Error Details"):
-                        st.code(traceback.format_exc())
+                st.markdown("##### Best Model Performance")
+                model_params = best_model.get_model_params()
+                perf_col1, perf_col2, perf_col3, perf_col4 = st.columns(4)
+
+                # Slice to best feature subset if needed
+                best_features = tuning_results.get('best_features')
+                if best_features and best_features != tune_features:
+                    best_col_idx = [tune_features.index(f) for f in best_features]
+                    X_train_best = X_train[:, best_col_idx]
+                    X_test_best = X_test[:, best_col_idx]
+                else:
+                    X_train_best = X_train
+                    X_test_best = X_test
+
+                with perf_col1:
+                    sil = model_params.get('silhouette_score')
+                    st.metric("Silhouette Score", f"{sil:.4f}" if sil else "N/A")
+                with perf_col2:
+                    st.metric("Threshold", f"{best_model.threshold:.4f}")
+                with perf_col3:
+                    train_preds = best_model.predict(X_train_best)
+                    st.metric("Train Anomaly Rate", f"{train_preds.mean():.2%}")
+                with perf_col4:
+                    test_preds = best_model.predict(X_test_best)
+                    st.metric("Test Anomaly Rate", f"{test_preds.mean():.2%}")
+
+            except Exception as e:
+                st.error(f"Grid search failed: {e}")
+                import traceback
+                with st.expander("Error Details"):
+                    st.code(traceback.format_exc())
 
 
 with tab3:
