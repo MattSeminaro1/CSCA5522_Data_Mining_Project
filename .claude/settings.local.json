@@ -5,7 +5,11 @@
       "Bash(docker exec:*)",
       "Bash(docker-compose:*)",
       "Bash(docker ps:*)",
-      "Bash(docker restart:*)"
+      "Bash(docker restart:*)",
+      "Bash(git:*)",
+      "Bash(docker stats:*)",
+      "Bash(wmic computersystem get TotalPhysicalMemory)",
+      "Bash(which latex:*)"
     ]
   }
 }

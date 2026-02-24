@@ -488,16 +488,18 @@ with tab2:
     if auto_model_type == "kmeans":
         auto_grid = {
             'n_clusters': [3, 4, 5, 6, 7, 8, 10],
+            'n_init': [3],  # Reduced from 10 for memory efficiency during tuning
         }
         auto_metric = "silhouette_score"
         n_auto = 7
     else:
         auto_grid = {
             'n_components': [3, 4, 5, 6, 7, 8, 10],
-            'covariance_type': ['full', 'tied', 'diag'],
+            'covariance_type': ['full', 'diag'],
+            'n_init': [3],  # Reduced from 5 for memory efficiency during tuning
         }
         auto_metric = "silhouette_score"
-        n_auto = 7 * 3  # 21 combinations
+        n_auto = 7 * 2  # 14 combinations
 
     auto_cluster_label = "n_clusters" if auto_model_type == "kmeans" else "n_components"
 

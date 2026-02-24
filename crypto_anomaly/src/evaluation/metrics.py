@@ -35,7 +35,8 @@ def compute_clustering_metrics(
         return {'n_clusters': n_clusters}
     
     try:
-        metrics['silhouette_score'] = float(silhouette_score(X, labels))
+        sample_size = min(2000, len(X))
+        metrics['silhouette_score'] = float(silhouette_score(X, labels, sample_size=sample_size, random_state=42))
     except ValueError as e:
         logger.warning("Silhouette score failed: %s", e)
         metrics['silhouette_score'] = None

@@ -93,7 +93,8 @@ class GMMAnommalyDetector(BaseAnomalyDetector):
         
         if len(X) > self.n_components and len(np.unique(self.cluster_labels_)) > 1:
             try:
-                self.silhouette_score_ = float(silhouette_score(X, self.cluster_labels_))
+                sample_size = min(2000, len(X))
+                self.silhouette_score_ = float(silhouette_score(X, self.cluster_labels_, sample_size=sample_size, random_state=42))
             except ValueError:
                 self.silhouette_score_ = None
     
@@ -216,7 +217,8 @@ class GMMAnommalyDetector(BaseAnomalyDetector):
             labels = model.predict(X_scaled)
             if len(np.unique(labels)) > 1:
                 try:
-                    sil = float(silhouette_score(X_scaled, labels))
+                    sample_size = min(10000, len(X_scaled))
+                    sil = float(silhouette_score(X_scaled, labels, sample_size=sample_size, random_state=42))
                     results['silhouette'].append(sil)
                 except ValueError:
                     results['silhouette'].append(np.nan)

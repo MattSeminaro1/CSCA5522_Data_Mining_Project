@@ -203,10 +203,13 @@ class Database:
             ON CONFLICT ({conflict_str}) DO UPDATE SET {update_str}
         """
         
+        records = df.to_dict('records')
+        params_list = [
+            {col: self._convert_value(row[col]) for col in columns}
+            for row in records
+        ]
         with self.connection() as conn:
-            for _, row in df.iterrows():
-                params = {col: self._convert_value(row[col]) for col in columns}
-                conn.execute(text(query), params)
+            conn.execute(text(query), params_list)
     
     def _convert_value(self, value: Any) -> Any:
         """Convert pandas/numpy types to Python native types."""
